@@ -43,6 +43,7 @@ class OperatorConverter(object):
             'SOFTMAX': self.convert_softmax,
             'SQUEEZE': self.convert_squeeze,
             'MAX_POOL_2D': self.convert_max_pool2d,
+            'CONCATENATION': self.convert_concatenation,
             # Add more operators
         }
 
@@ -167,6 +168,58 @@ class OperatorConverter(object):
     def convert_max_pool2d(self, op):
         """Convert TFLite max pool2d"""
         return self.convert_pool2d(op, "max")
+
+    # NHWC -> NCHW
+    def translate_axis(self, axis):
+        if axis == 0:
+            return 0
+        if axis == 1:
+            return 2
+        if axis == 2:
+            return 3
+        if axis == 3:
+            return 1
+    
+
+    def convert_concatenation(self, op):
+        """concatenation implementation."""
+        try:
+            from tflite.BuiltinOptions import BuiltinOptions
+            from tflite.ConcatenationOptions import ConcatenationOptions
+            from tflite.ActivationFunctionType import ActivationFunctionType
+            from tflite.Operator import Operator
+        except ImportError:
+            raise ImportError("The tflite package must be installed")
+
+        assert isinstance(op, Operator)
+        input_tensors = self.get_input_tensors(op)
+        assert len(input_tensors) >= 1, "input tensors length should be >= 2"
+
+        assert op.BuiltinOptionsType() == BuiltinOptions.ConcatenationOptions
+        op_options = op.BuiltinOptions()
+        concat_options = ConcatenationOptions()
+        concat_options.Init(op_options.Bytes, op_options.Pos)
+        axis = concat_options.Axis()
+        fused_activation_fn = concat_options.FusedActivationFunction()
+
+        _input_dims = input_tensors[0].tensor.ShapeAsNumpy()
+        first_input_tensor = input_tensors[0]
+        in_expr = [self.get_expr(first_input_tensor.tensor_idx)]
+        for input_tensor in input_tensors[1:]:
+            input_dims = input_tensor.tensor.ShapeAsNumpy()
+            for idx in range(4):
+                if idx != axis:
+                    assert _input_dims[idx] == input_dims[idx]
+            in_expr.append(self.get_expr(input_tensor.tensor_idx))
+
+        axis = self.translate_axis(axis)
+        out = _op.concatenate(data=in_expr, axis=axis) 
+        
+        # If we have fused activations
+        if fused_activation_fn != ActivationFunctionType.NONE:
+            out = self.convert_fused_activation_function(out, fused_activation_fn)
+        return out
+
 
     def convert_reshape(self, op):
         """Convert TFLite reshape"""
